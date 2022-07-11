@@ -55,12 +55,11 @@ public class MllpInRoute extends MllpToJmsRouteBuilder {
 
     // Set up the audit component
     // Producer  components should use pooled connectionfactory
-    //String jmsAuditComponent = "jms-audit";
-    //AmqpUtils.addSjms2NamedComponentToContext(context, jmsAuditComponent, auditBroker);
+    String jmsAuditComponent = "jms-audit";
+    AmqpUtils.addSjms2NamedComponentToContext(context, jmsAuditComponent, auditBroker);
 
-    //setAuditComponent(jmsAuditComponent);
-    setAuditComponent(jmsInboundComponent);
-
+    setAuditComponent(jmsAuditComponent);
+    
     super.configure();
   }
 }
