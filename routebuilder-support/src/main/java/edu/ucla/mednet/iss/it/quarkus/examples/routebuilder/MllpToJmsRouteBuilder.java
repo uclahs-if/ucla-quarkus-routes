@@ -7,12 +7,10 @@ import edu.ucla.mednet.iss.it.quarkus.examples.utils.InvalidConfigurationExcepti
 import edu.ucla.mednet.iss.it.quarkus.examples.utils.SentMllpAcknowledgmentAuditProcessor;
 import edu.ucla.mednet.iss.it.quarkus.examples.utils.UclaHl7EnrichmentProcessor;
 import java.util.StringJoiner;
-import javax.jms.JMSException;
 import org.apache.camel.LoggingLevel;
 import org.apache.camel.Processor;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.model.OnCompletionDefinition;
-import org.apache.camel.model.OnExceptionDefinition;
 import org.apache.camel.model.RouteDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -161,11 +159,13 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
     // JMS exceptions will shut the route down.
     // This will not send a AR or AE back.
     // We expect openshift to restart the pod after this is shutdown.
+    /* 
     OnExceptionDefinition jmsExceptionDefinition =
         onException(JMSException.class).id(routeId + ": JMSException Error Handler")
             .handled(false)
             .log(LoggingLevel.WARN, "JMS ERROR Shutting down route.")
             .to(SYNC_SHUTDOWN_URI);
+    */
 
     RouteDefinition fromDefinition = fromF("mllp:0.0.0.0:%d", mllpPort, getSourceComponentOptions()).routeId(routeId);
 
