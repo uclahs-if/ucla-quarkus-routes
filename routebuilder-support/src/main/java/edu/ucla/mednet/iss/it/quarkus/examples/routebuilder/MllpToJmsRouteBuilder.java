@@ -36,7 +36,7 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   /*
     Unexpected Failure Options
    */
-  boolean shutdownOnFailure = true;
+  boolean shutdownOnFailure = false;
   String failureComponent;
   String failureDestinationName = DEFAULT_FAILURE_DESTINATION_NAME;
   Processor auditFailureProcessor;
@@ -64,9 +64,9 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   Integer receiveBufferSize;
   Integer sendBufferSize;
   Boolean lenientBind = true;
-  Boolean autoAck = false;
+  Boolean autoAck = true;
   Boolean hl7Headers;
-  Boolean requireEndOfData;
+  Boolean requireEndOfData = true;
   Boolean validatePayload = true;
   Boolean stringPayload;
   String charsetName;
