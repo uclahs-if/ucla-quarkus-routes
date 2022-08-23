@@ -23,14 +23,13 @@
     https://maven.repository.redhat.com/ga/com/redhat/quarkus/platform/quarkus-bom/
     https://maven.repository.redhat.com/ga/com/redhat/quarkus/platform/quarkus-camel-bom/
     -->
-    <quarkus.platform.version>2.2.5.SP2-redhat-00003</quarkus.platform.version>
+    <quarkus.platform.version>2.7.6.Final-redhat-00006</quarkus.platform.version>
     <surefire-plugin.version>3.0.0-M5</surefire-plugin.version>
     <compiler-plugin.version>3.8.1</compiler-plugin.version>
     <hapi.version>2.3</hapi.version>
     <hamcrest.version>2.2</hamcrest.version>
     <awaitility.version>4.1.1</awaitility.version>
     <messaginghub-pooled-jms.version>2.0.4.redhat-00001</messaginghub-pooled-jms.version>
-    <apache-activemq.version>2.21.0.redhat-00025</apache-activemq.version>
     <gson.version>2.9.0</gson.version>
     <maven-pmd-plugin.version>3.15.0</maven-pmd-plugin.version>
     <maven-source-plugin.version>3.2.0</maven-source-plugin.version>
@@ -102,31 +101,7 @@
         <artifactId>pooled-jms</artifactId>
         <version>${messaginghub-pooled-jms.version}</version>
       </dependency>
-      <dependency>
-        <groupId>org.apache.activemq</groupId>
-        <artifactId>artemis-server</artifactId>
-        <version>${apache-activemq.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.apache.activemq</groupId>
-        <artifactId>artemis-commons</artifactId>
-        <version>${apache-activemq.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.apache.activemq</groupId>
-        <artifactId>artemis-core-client</artifactId>
-        <version>${apache-activemq.version}</version>
-    </dependency>
-    <dependency>
-        <groupId>org.apache.activemq</groupId>
-        <artifactId>artemis-amqp-protocol</artifactId>
-        <version>${apache-activemq.version}</version>
-    </dependency>
-      <dependency>
-        <groupId>com.google.code.gson</groupId>
-        <artifactId>gson</artifactId>
-        <version>${gson.version}</version>
-      </dependency>
+  
       <!-- Logging -->
       <!-- Testing -->
       <dependency>
@@ -228,6 +203,7 @@
           <groupId>org.amqphub.quarkus</groupId>
           <artifactId>quarkus-qpid-jms</artifactId>
       </dependency>
+
 
    <!-- Logging -->
   <dependency>
