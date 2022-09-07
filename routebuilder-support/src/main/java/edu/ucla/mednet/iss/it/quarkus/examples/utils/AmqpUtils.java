@@ -12,16 +12,13 @@ public class AmqpUtils {
   static Logger log = LoggerFactory.getLogger(AmqpUtils.class);
 
   /**
-   * Create a named sjms2 component including the jms health check.
+   * Create a named sjms2 component this does not include the jms health check.
    * @param context the camel context to add the component and health check to.
    * @param name the name of the camel component.
    * @param connectionFactory used in the sjms2 component and health check
    */
   public static void addSjms2NamedComponentToContext(CamelContext context, String name, ConnectionFactory connectionFactory) {
     if (null == context.hasComponent(name)) {
-
-      context.getRegistry().bind(name + "-healthCheck", new JmsHealthCheck(name, connectionFactory));
-
       Sjms2Component component = new Sjms2Component();
       component.setConnectionFactory(connectionFactory);
       context.addComponent(name, component);
@@ -45,6 +42,9 @@ public class AmqpUtils {
     if (amqConfig.password().isPresent()) {
       qpidConnectionFactory.setPassword(amqConfig.password().get());
     }
+
+    qpidConnectionFactory.setConnectionIDPrefix(name + "-");
+    context.getRegistry().bind(name + "-healthCheck", new JmsHealthCheck(name, qpidConnectionFactory));
 
     JmsPoolConnectionFactory jmsPoolConnectionFactory = new JmsPoolConnectionFactory();
     jmsPoolConnectionFactory.setConnectionFactory(qpidConnectionFactory);
