@@ -37,9 +37,7 @@ public class AmqpUtils {
    * @param amqConfig create a default pooled connection factory using the parameters provided.
    */
   public static void addSjms2NamedComponentToContext(CamelContext context, String name, AmqConfig amqConfig) {
-    String jmsFormattedUrl = String.format("failover:(%s)?jms.forceSyncSend=true&jms.prefetchPolicy.all=0", amqConfig.url());
-     
-    JmsConnectionFactory qpidConnectionFactory = new JmsConnectionFactory(jmsFormattedUrl);
+    JmsConnectionFactory qpidConnectionFactory = new JmsConnectionFactory(amqConfig.url());
 
     if (amqConfig.username().isPresent()) {
       qpidConnectionFactory.setUsername(amqConfig.username().get());
