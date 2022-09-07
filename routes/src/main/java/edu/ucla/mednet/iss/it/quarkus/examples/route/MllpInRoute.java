@@ -34,8 +34,7 @@ public class MllpInRoute extends MllpToJmsRouteBuilder {
   @Override
   public void configure() throws Exception {
     this.setRouteId("mllp-in");
-
-    setMllpPort(mllpInConfig.port());
+    setListenAddress("0.0.0.0:" + mllpInConfig.port());
 
 
     // Set up the outbound component

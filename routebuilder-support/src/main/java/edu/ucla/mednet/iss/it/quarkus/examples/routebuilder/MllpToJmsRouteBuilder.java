@@ -1,19 +1,21 @@
 package edu.ucla.mednet.iss.it.quarkus.examples.routebuilder;
 
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.FailureAuditProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.Hl7AuditMessageProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.InboundAuditEnrichmentProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.InvalidConfigurationException;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.SentMllpAcknowledgmentAuditProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.UclaHl7EnrichmentProcessor;
 import java.util.StringJoiner;
+import javax.jms.JMSException;
 import org.apache.camel.LoggingLevel;
 import org.apache.camel.Processor;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.model.OnCompletionDefinition;
+import org.apache.camel.model.OnExceptionDefinition;
 import org.apache.camel.model.RouteDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.FailureAuditProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.Hl7AuditMessageProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.InboundAuditEnrichmentProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.SentMllpAcknowledgmentAuditProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.UclaHl7EnrichmentProcessor;
 
 /**
  * Camel RouteBuilder for MLLP Receivers.
@@ -23,20 +25,20 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   static final String DEFAULT_FAILURE_DESTINATION_NAME = "audit-failure";
   static final String DEFAULT_AUDIT_DESTINATION_NAME = "audit-in";
 
+  static final String DEFAULT_SOURCE_COMPONENT = "mllp";
   static final String DEFAULT_ACKNOWLEDGEMENT_DESTINATION_NAME = "audit-ack";
 
-  private Logger log = LoggerFactory.getLogger(getClass());
 
   /*
     Standard route configuration
    */
   String containerName;
-  String routeId = Double.toString(Math.random());
+  String routeId;
 
   /*
     Unexpected Failure Options
    */
-  boolean shutdownOnFailure = false;
+  boolean shutdownOnFailure = true;
   String failureComponent;
   String failureDestinationName = DEFAULT_FAILURE_DESTINATION_NAME;
   Processor auditFailureProcessor;
@@ -50,7 +52,9 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   /*
     Source configuration
    */
-  Integer mllpPort;
+  String sourceComponent = DEFAULT_SOURCE_COMPONENT;
+  String listenAddress = "0.0.0.0";
+
   Integer backlog;
   Integer bindTimeout;
   Integer bindRetryInterval;
@@ -66,12 +70,12 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   Boolean lenientBind = true;
   Boolean autoAck = true;
   Boolean hl7Headers;
-  Boolean requireEndOfData = true;
+  Boolean requireEndOfData;
   Boolean validatePayload = true;
   Boolean stringPayload;
   String charsetName;
   String targetType = "topic";
-  boolean logTargetMessage = true;
+  Integer maxConcurrentConsumers;
 
   /*
     Audit configuration
@@ -81,8 +85,8 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   /*
     Target configuration
    */
-  String targetComponent = "sjms2";
-  String targetDestinationName = "myname";
+  String targetComponent;
+  String targetDestinationName;
 
   /*
     Processing configuration
@@ -96,7 +100,6 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
    */
   Processor auditAcknowledgementProcessor;
   String acknowledgmentDestinationName = DEFAULT_ACKNOWLEDGEMENT_DESTINATION_NAME;
-
 
 
   /**
@@ -116,7 +119,6 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
     auditAcknowledgementProcessor = new SentMllpAcknowledgmentAuditProcessor();
     auditFailureProcessor = new FailureAuditProcessor();
 
-
   }
 
 
@@ -130,6 +132,8 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   public void configure() throws Exception {
     verifyConfiguration();
 
+    errorHandler(defaultErrorHandler().allowRedeliveryWhileStopping(false).maximumRedeliveries(0));
+
     // Setup the exchange failure completion clause
     OnCompletionDefinition onFailure = onCompletion().id(routeId + ": onFailureOnly Handler")
         .onFailureOnly().log(LoggingLevel.INFO, "ON FAILURE.");
@@ -137,11 +141,26 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
       if (hasAuditFailureProcessor()) {
         onFailure = onFailure.process(getAuditFailureProcessor()).id(routeId + ": Prepare for audit");
       }
-      onFailure = onFailure.toF("%s:topic:%s?transacted=false", getFailureComponent(), getFailureDestinationName()).id(routeId + ": Audit failure");
+      onFailure = onFailure.toF("%s:queue:%s?transacted=false", getFailureComponent(), getFailureDestinationName()).id(routeId + ": Audit failure");
     }
     if (shutdownOnFailure) {
       onFailure.toF(SYNC_SHUTDOWN_URI).id(routeId + ": Stop Route on failure");
     }
+
+    /*
+     * JMS exceptions will shut the route down.
+     * This will not send a AR or AE back.
+     * We expect openshift to restart the pod after this is shutdown.
+     */
+    OnExceptionDefinition jmsExceptionDefinition =
+        onException(JMSException.class).id(routeId + ": JMSException Error Handler")
+            .handled(false)
+            .retriesExhaustedLogLevel(LoggingLevel.WARN)
+            .logRetryAttempted(true)
+            .log(LoggingLevel.WARN, "JMS ERROR Shutting down route.")
+            .to(SYNC_SHUTDOWN_URI);
+
+
 
     // Setup acknowledgment auditing
     if (hasAcknowledgmentDestinationName()) {
@@ -149,31 +168,19 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
           onCompletion().id(routeId + ": onCompleteOnly Completion Handler")
               .onCompleteOnly()
               .modeAfterConsumer()
-              .log(LoggingLevel.TRACE, "Setup acknowledgment auditing.");
+              .log(LoggingLevel.INFO, "Setup acknowledgment auditing.");
       if (hasAuditAcknowledgementProcessor()) {
         onCompleteOnly = onCompleteOnly.process(auditAcknowledgementProcessor).id(routeId + ": Prepare acknowledgement for audit");
       }
-      onCompleteOnly.toF("%s:topic:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), acknowledgmentDestinationName).id(routeId + ": Persist acknowledgement");
+      onCompleteOnly.toF("%s:queue:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), acknowledgmentDestinationName).id(routeId + ": Persist acknowledgement");
     }
 
-    // JMS exceptions will shut the route down.
-    // This will not send a AR or AE back.
-    // We expect openshift to restart the pod after this is shutdown.
-    /* 
-    OnExceptionDefinition jmsExceptionDefinition =
-        onException(JMSException.class).id(routeId + ": JMSException Error Handler")
-            .handled(false)
-            .log(LoggingLevel.WARN, "JMS ERROR Shutting down route.")
-            .to(SYNC_SHUTDOWN_URI);
-    */
-
-    RouteDefinition fromDefinition = fromF("mllp:0.0.0.0:%d", mllpPort, getSourceComponentOptions()).routeId(routeId);
-
+    RouteDefinition fromDefinition = fromF("%s://%s%s", sourceComponent, listenAddress, getSourceComponentOptions()).routeId(routeId);
 
     if (hasAuditEnrichmentProcessor()) {
       fromDefinition = fromDefinition.process(auditEnrichmentProcessor).id(routeId + ": Audit Enrichment Processor").log(LoggingLevel.TRACE, "Audit Enrichment Processor");
     }
-
+    
     if (hasPayloadPreProcessor()) {
       fromDefinition = fromDefinition.process(payloadPreProcessor).id(routeId + ": Payload Pre-Processor").log(LoggingLevel.TRACE, "Payload Pre-Processor");
     }
@@ -200,11 +207,11 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
     }
 
     // Audit the message
-    fromDefinition = fromDefinition.toF("%s:topic:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), auditDestinationName).id(routeId + ": Audit Message");
+    fromDefinition = fromDefinition.toF("%s:queue:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), auditDestinationName).id(routeId + ": Audit Message");
 
     // Log the message after sending to JMS.
     fromDefinition.setBody(body().regexReplaceAll("\\r", System.lineSeparator()))
-        .log(LoggingLevel.INFO, "Body Sent to AMQ ${bodyOneLine}");
+        .toF("log:%s-logMessage?showBodyType=false&showExchangePattern=false&maxChars=200", routeId);
   }
 
 
@@ -331,23 +338,23 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
     this.auditFailureProcessor = auditFailureProcessor;
   }
 
-  public boolean hasMllpPort() {
-    return mllpPort != null;
+  public boolean hasListenAddress() {
+    return listenAddress != null && !listenAddress.isEmpty();
   }
 
-  public Integer getMllpPort() {
-    return mllpPort;
+  public String getListenAddress() {
+    return listenAddress;
   }
 
   /**
-   * Configure the listening port for the source MLLP component.
+   * Configure the listening address for the source MLLP component.
    *
-   * The format of the listening port is {listening port}
+   * The format of the listening address is {hostname or ip}:{listening port}
    *
-   * @param mllpPort the listening port
+   * @param listenAddress the listening address
    */
-  public void setMllpPort(Integer mllpPort) {
-    this.mllpPort = mllpPort;
+  public void setListenAddress(String listenAddress) {
+    this.listenAddress = listenAddress;
   }
 
   public boolean hasAuditEnrichmentProcessor() {
@@ -430,6 +437,23 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
    */
   public void setAuditAcknowledgementProcessor(Processor auditAcknowledgementProcessor) {
     this.auditAcknowledgementProcessor = auditAcknowledgementProcessor;
+  }
+
+  public boolean hasSourceComponent() {
+    return sourceComponent != null && !sourceComponent.isEmpty();
+  }
+
+  public String getSourceComponent() {
+    return sourceComponent;
+  }
+
+  /**
+   * Configure the name of the MLLP component in the Camel registry for source messages.
+   *
+   * @param sourceComponent the name of the source component in the Camel registry
+   */
+  public void setSourceComponent(String sourceComponent) {
+    this.sourceComponent = sourceComponent;
   }
 
   public boolean hasAuditComponent() {
@@ -595,7 +619,23 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
       componentOptions.add("charsetName=" + charsetName);
     }
 
+    if(hasMaxConcurrentConsumers()) {
+      componentOptions.add("maxConcurrentConsumers=" + maxConcurrentConsumers);
+    }
+
     return componentOptions.toString();
+  }
+
+    private boolean hasMaxConcurrentConsumers() {
+    return maxConcurrentConsumers != null;
+  }
+
+  public void setMaxConcurrentConsumers(Integer maxConcurrentConsumers) {
+    this.maxConcurrentConsumers = maxConcurrentConsumers;
+  }
+
+  public Integer getMaxConcurrentConsumers() {
+    return maxConcurrentConsumers;
   }
 
   public boolean hasBacklog() {
@@ -910,9 +950,9 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
 
   /**
    * Configure the automatic generation of MLLP acknowledgements by the MLLP component.
-   *
+   * <p>
    * If specified, this property will be used to set the autoAck parameter of the MLLP component.
-   *
+   * <p>
    * If this value is null, the autoAck parameter will not be specified in the MLLP URI and the MLLP component will use it's default value.
    *
    * @see <a href="https://github.com/apache/camel/blob/main/components/camel-mllp/src/main/docs/mllp-component.adoc"></a>
@@ -1036,15 +1076,6 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
     return charsetName;
   }
 
-  public void setLogTargetMessage(boolean logTargetMessage) {
-    this.logTargetMessage = logTargetMessage;
-  }
-
-  public boolean getLogTargetMessage() {
-    return logTargetMessage;
-  }
-
-
   /**
    * Configure character set for the MLLP component to use when encoding/decoding payloads .
    *
@@ -1065,8 +1096,12 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
    * @throws InvalidConfigurationException when a required component is not set.
    */
   void verifyConfiguration() throws RuntimeException {
-    if (!hasMllpPort()) {
-      throw new IllegalStateException("MLLP Listening port must be specified");
+    if (!hasListenAddress()) {
+      throw new IllegalStateException("MLLP Listening address must be specified");
+    }
+
+    if (!hasSourceComponent()) {
+      throw new IllegalStateException("Source component must be specified");
     }
 
     if (!hasTargetComponent()) {
@@ -1083,7 +1118,7 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
 
     // Populate some default/derived values
     if (routeId == null) {
-      routeId = "mllp-receiver-" + mllpPort;
+      routeId = "mllp-receiver-" + listenAddress;
     }
 
     if (!hasAuditEnrichmentProcessor()) {
