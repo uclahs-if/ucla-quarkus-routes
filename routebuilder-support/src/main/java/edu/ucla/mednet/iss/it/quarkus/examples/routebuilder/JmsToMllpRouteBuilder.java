@@ -1,17 +1,11 @@
 package edu.ucla.mednet.iss.it.quarkus.examples.routebuilder;
 
 
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.FailureAuditProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.Hl7AuditMessageProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.InvalidConfigurationException;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.InvocationCounterPredicate;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.LoggingRedeliveryProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.OutboundAuditEnrichmentProcessor;
-import edu.ucla.mednet.iss.it.quarkus.examples.utils.ReceivedMllpAcknowledgementProcessor;
 import java.net.ConnectException;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.StringJoiner;
+
 import org.apache.camel.LoggingLevel;
 import org.apache.camel.Predicate;
 import org.apache.camel.Processor;
@@ -24,6 +18,14 @@ import org.apache.camel.model.OnExceptionDefinition;
 import org.apache.camel.model.ProcessorDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.FailureAuditProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.Hl7AuditMessageProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.InvalidConfigurationException;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.InvocationCounterPredicate;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.LoggingRedeliveryProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.OutboundAuditEnrichmentProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.ReceivedMllpAcknowledgementProcessor;
 
 /**
  * A Camel RouteBuilder that implements a JMS to MLLP route.
@@ -322,7 +324,7 @@ public class JmsToMllpRouteBuilder extends RouteBuilder {
     }
     // Audit the message (AUDIT-OUT)
 
-    fromDefinition.toF("%s:topic:%s?exchangePattern=InOnly&transacted=true", getAuditComponent(), auditDestinationName)
+    fromDefinition = fromDefinition.toF("%s:topic:%s?exchangePattern=InOnly&transacted=true", getAuditComponent(), auditDestinationName)
         .id(routeId + ": Audit Message")
         .log(LoggingLevel.TRACE, "hl7AuditMessageProcessor");;
 
