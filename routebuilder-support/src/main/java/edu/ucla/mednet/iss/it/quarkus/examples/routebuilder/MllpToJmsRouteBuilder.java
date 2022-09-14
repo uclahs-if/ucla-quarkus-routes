@@ -1,19 +1,22 @@
 package edu.ucla.mednet.iss.it.quarkus.examples.routebuilder;
 
 import java.util.StringJoiner;
+
 import javax.jms.JMSException;
+
 import org.apache.camel.LoggingLevel;
 import org.apache.camel.Processor;
 import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.mllp.MllpConstants;
 import org.apache.camel.model.OnCompletionDefinition;
 import org.apache.camel.model.OnExceptionDefinition;
 import org.apache.camel.model.RouteDefinition;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import edu.ucla.mednet.iss.it.quarkus.examples.utils.FailureAuditProcessor;
 import edu.ucla.mednet.iss.it.quarkus.examples.utils.Hl7AuditMessageProcessor;
 import edu.ucla.mednet.iss.it.quarkus.examples.utils.InboundAuditEnrichmentProcessor;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.KubernetesApi;
+import edu.ucla.mednet.iss.it.quarkus.examples.utils.LogHl7Body;
 import edu.ucla.mednet.iss.it.quarkus.examples.utils.SentMllpAcknowledgmentAuditProcessor;
 import edu.ucla.mednet.iss.it.quarkus.examples.utils.UclaHl7EnrichmentProcessor;
 
@@ -76,6 +79,11 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   String charsetName;
   String targetType = "topic";
   Integer maxConcurrentConsumers;
+  // Default to send AE's back to the sender. If this is set to an empty string a nak will not be sent.
+  String  mllpErrorAckType = "AE";
+  boolean jmsExceptionHandled = false;
+  boolean jmsExceptionShutdown = false;
+  int jmsExceptionMximumRedeliveries = 0;
 
   /*
     Audit configuration
@@ -87,6 +95,7 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
    */
   String targetComponent;
   String targetDestinationName;
+  String targetDestinationTransacted = "false";
 
   /*
     Processing configuration
@@ -101,6 +110,10 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
   Processor auditAcknowledgementProcessor;
   String acknowledgmentDestinationName = DEFAULT_ACKNOWLEDGEMENT_DESTINATION_NAME;
 
+  /**
+   * Kubernetes Information.
+   */
+  KubernetesApi kubernetesApi;
 
   /**
    * Create an instance and configure the default processors.
@@ -111,7 +124,7 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
     enrichmentProcessor.setRequired(true);
     enrichmentProcessor.setCleanPayload(false);
     enrichmentProcessor.setGenerateHeaders(true);
-    enrichmentProcessor.setGenerateAcknowledgement(true);
+    enrichmentProcessor.setGenerateAcknowledgement(false);
 
     payloadProcessor = enrichmentProcessor;
 
@@ -119,6 +132,8 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
     auditAcknowledgementProcessor = new SentMllpAcknowledgmentAuditProcessor();
     auditFailureProcessor = new FailureAuditProcessor();
 
+
+    kubernetesApi = new KubernetesApi();
   }
 
 
@@ -136,51 +151,77 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
 
     // Setup the exchange failure completion clause
     OnCompletionDefinition onFailure = onCompletion().id(routeId + ": onFailureOnly Handler")
-        .onFailureOnly().log(LoggingLevel.INFO, "ON FAILURE.");
+        .onFailureOnly()
+        .log(LoggingLevel.ERROR, "ON FAILURE EVENT.");
     if (hasFailureComponent() && hasFailureDestinationName()) {
       if (hasAuditFailureProcessor()) {
         onFailure = onFailure.process(getAuditFailureProcessor()).id(routeId + ": Prepare for audit");
       }
       onFailure = onFailure.toF("%s:queue:%s?transacted=false", getFailureComponent(), getFailureDestinationName()).id(routeId + ": Audit failure");
     }
+    onFailure = onFailure .setProperty(MllpConstants.MLLP_ACKNOWLEDGEMENT_TYPE, simple(mllpErrorAckType));
     if (shutdownOnFailure) {
       onFailure.toF(SYNC_SHUTDOWN_URI).id(routeId + ": Stop Route on failure");
     }
 
+
+    OnExceptionDefinition jmsAAExceptionDefinition =
+        onException(JMSException.class).id(routeId + ": JMSException Error Handler after AA")
+            .onWhen(exchangeProperty(MllpConstants.MLLP_ACKNOWLEDGEMENT_TYPE).isEqualTo("AA"))
+            .handled(true)
+            .maximumRedeliveries(0)
+            .retriesExhaustedLogLevel(LoggingLevel.ERROR)
+            .log(LoggingLevel.ERROR, "JMS ERROR Was caught after setting CamelMllpAcknowledgementType=AA message is not rolled back.");
+
     /*
      * JMS exceptions will shut the route down.
-     * This will not send a AR or AE back.
+     * This will send out the ACK Type in mllpErrorAckType.
      * We expect openshift to restart the pod after this is shutdown.
      */
-    OnExceptionDefinition jmsExceptionDefinition =
+    OnExceptionDefinition jmsAEExceptionDefinition =
         onException(JMSException.class).id(routeId + ": JMSException Error Handler")
-            .handled(false)
-            .retriesExhaustedLogLevel(LoggingLevel.WARN)
+            .handled(jmsExceptionHandled)
+            .maximumRedeliveries(jmsExceptionMximumRedeliveries)
+            .retriesExhaustedLogLevel(LoggingLevel.ERROR)
             .logRetryAttempted(true)
-            .log(LoggingLevel.WARN, "JMS ERROR Shutting down route.")
-            .to(SYNC_SHUTDOWN_URI);
-
-
-
-    // Setup acknowledgment auditing
-    if (hasAcknowledgmentDestinationName()) {
-      OnCompletionDefinition onCompleteOnly =
-          onCompletion().id(routeId + ": onCompleteOnly Completion Handler")
-              .onCompleteOnly()
-              .modeAfterConsumer()
-              .log(LoggingLevel.INFO, "Setup acknowledgment auditing.");
-      if (hasAuditAcknowledgementProcessor()) {
-        onCompleteOnly = onCompleteOnly.process(auditAcknowledgementProcessor).id(routeId + ": Prepare acknowledgement for audit");
-      }
-      onCompleteOnly.toF("%s:queue:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), acknowledgmentDestinationName).id(routeId + ": Persist acknowledgement");
+            .log(LoggingLevel.ERROR, "JMS ERROR Caught Setting ACK Type to \"" + mllpErrorAckType + "\"")
+            .setProperty(MllpConstants.MLLP_ACKNOWLEDGEMENT_TYPE, simple(mllpErrorAckType));
+    if (jmsExceptionShutdown) {
+      jmsAEExceptionDefinition = jmsAEExceptionDefinition.log(LoggingLevel.ERROR, "Shutting down route due to jmsExcpetionShutdown.")
+                                                          .to(SYNC_SHUTDOWN_URI);
     }
 
+    // Setup acknowledgment auditing
+    OnCompletionDefinition onCompleteOnly =
+        onCompletion().id(routeId + ": onCompleteOnly Completion Handler")
+            .onCompleteOnly()
+            .modeAfterConsumer()
+            .log(LoggingLevel.INFO, "Setup auditing.");
+
+    if (hl7AuditMessageProcessor != null) {
+      onCompleteOnly = onCompleteOnly.bean(hl7AuditMessageProcessor);
+    }
+    // Audit the message
+    onCompleteOnly = onCompleteOnly.toF("%s:queue:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), auditDestinationName).id(routeId + ": Audit Message");
+    if (hasAuditAcknowledgementProcessor()) {
+      onCompleteOnly = onCompleteOnly.process(auditAcknowledgementProcessor).id(routeId + ": Prepare acknowledgement for audit");
+    }
+    onCompleteOnly =  onCompleteOnly.log(LoggingLevel.INFO, "Setup auditing.")
+        .bean(LogHl7Body.class)
+        .toF("%s:queue:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), acknowledgmentDestinationName).id(routeId + ": Persist acknowledgement");
+
+
     RouteDefinition fromDefinition = fromF("%s://%s%s", sourceComponent, listenAddress, getSourceComponentOptions()).routeId(routeId);
+
+    // Set the default ACK Type to an error. This will be set to AA if the route completes
+    fromDefinition.setProperty(MllpConstants.MLLP_ACKNOWLEDGEMENT_TYPE, simple(mllpErrorAckType));
 
     if (hasAuditEnrichmentProcessor()) {
       fromDefinition = fromDefinition.process(auditEnrichmentProcessor).id(routeId + ": Audit Enrichment Processor").log(LoggingLevel.TRACE, "Audit Enrichment Processor");
     }
     
+    fromDefinition = fromDefinition.process(kubernetesApi).id(routeId + ": Add Kubernetes Headers").log(LoggingLevel.TRACE, "Add Kubernetes Headers");
+
     if (hasPayloadPreProcessor()) {
       fromDefinition = fromDefinition.process(payloadPreProcessor).id(routeId + ": Payload Pre-Processor").log(LoggingLevel.TRACE, "Payload Pre-Processor");
     }
@@ -199,22 +240,34 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
       }
     }
 
+    // Log the message before sending to JMS.
+    fromDefinition.bean(LogHl7Body.class);
     // Send the message to the jms target endpoint and audit endpoint.
-    fromDefinition = fromDefinition.toF("%s:%s:%s?exchangePattern=InOnly&transacted=true", targetComponent, targetType, targetDestinationName);
-
-    if (hl7AuditMessageProcessor != null) {
-      fromDefinition = fromDefinition.bean(hl7AuditMessageProcessor);
-    }
-
-    // Audit the message
-    fromDefinition = fromDefinition.toF("%s:queue:%s?exchangePattern=InOnly&transacted=false", getAuditComponent(), auditDestinationName).id(routeId + ": Audit Message");
-
-    // Log the message after sending to JMS.
-    fromDefinition.setBody(body().regexReplaceAll("\\r", System.lineSeparator()))
-        .toF("log:%s-logMessage?showBodyType=false&showExchangePattern=false&maxChars=200", routeId);
+    fromDefinition = fromDefinition.toF("%s:%s:%s?exchangePattern=InOnly&transacted=%s", targetComponent, targetType, targetDestinationName, targetDestinationTransacted);
+    // Send an AA.
+    fromDefinition.setProperty(MllpConstants.MLLP_ACKNOWLEDGEMENT_TYPE, simple("AA"));
   }
 
 
+  public void setTargetDestinationTransacted(String targetDestinationTransacted) {
+    this.targetDestinationTransacted = targetDestinationTransacted;
+  }
+
+  public void setJmsExceptionShutdown(boolean jmsExceptionShutdown) {
+    this.jmsExceptionShutdown = jmsExceptionShutdown;
+  }
+
+  public void setJmsExceptionMximumRedeliveries(int jmsExceptionMximumRedeliveries) {
+    this.jmsExceptionMximumRedeliveries = jmsExceptionMximumRedeliveries;
+  }
+
+  public void setJmsExceptionHandled(boolean jmsExceptionHandled) {
+    this.jmsExceptionHandled = jmsExceptionHandled;
+  }
+
+  public boolean getjmsExceptionHandled() {
+    return jmsExceptionHandled;
+  }
 
   public boolean hasContainerName() {
     return containerName != null && containerName.isEmpty();
@@ -1089,6 +1142,14 @@ public class MllpToJmsRouteBuilder extends RouteBuilder {
    */
   public void setCharsetName(String charsetName) {
     this.charsetName = charsetName;
+  }
+
+  public String getMllpErrorAckType() {
+    return mllpErrorAckType;
+  }
+
+  public void setMllpErrorAckType(String mllpErrorAckType) {
+    this.mllpErrorAckType = mllpErrorAckType;
   }
 
   /**
