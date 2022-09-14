@@ -43,7 +43,9 @@ jobs:
     - name: Add RedHat Maven Repo (GA)
       uses: whelk-io/maven-settings-xml-action@v20
       with:
-        repositories: '[{ "id": "redhat-ga", "url": " https://maven.repository.redhat.com/ga/ " }]'  
+        repositories: '[{ "id": "redhat-ga", "url": "https://maven.repository.redhat.com/ga/" }]'
+        plugin_repositories: '[{ "id": "redhat-ga", "url": "https://maven.repository.redhat.com/ga/" }]'
+  
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
