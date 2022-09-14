@@ -39,6 +39,6 @@ public interface MllpInConfig {
   @WithDefault("0")
   int jmsExceptionMximumRedeliveries();
 
-  @WithDefault("true")
+  @WithDefault("false")
   String targetDestinationTransacted();
 }
